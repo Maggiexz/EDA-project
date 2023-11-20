@@ -1,0 +1,566 @@
+---
+title: "CITS4009 Project 1"
+output:   
+  html_document:
+    theme: cerulean
+    highlight: zenburn
+    code_folding: show
+runtime: shiny
+---
+#### Student Name:   Xiao ZHANG
+#### Student Number: 23363869
+#### URL of Video:   [YouTube Video](https://youtu.be/eFVgayzollc)
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE,
+	fig.align = "center"
+)
+```
+
+# 1 Introduction
+
+The data set analyzed can be obtained from the Kaggle platform. A collection of YouTube giants, this dataset offers a perfect avenue to analyze and gain valuable insights from the luminaries of the platform. With comprehensive details on top creators' subscriber counts, video views, upload frequency, country of origin, earnings, and more.Here is the original data source [global youtube statisctic](https://www.kaggle.com/datasets/nelgiriyewithana/global-youtube-statistics-2023).
+
+
+# 2 Data loading, overview and set up
+
+Load needed libraries
+
+```{r message=FALSE, warning=FALSE}
+library(ggplot2)
+library(ggthemes)
+library(dplyr)
+library(shiny)
+library(maps)
+library(hexbin)
+library(countrycode)
+library(rworldmap)
+library(leaflet)
+library(plotly)
+library(janitor)
+```
+
+Set up a consistent plot format
+
+```{r theme}
+plot_theme <- theme_few() + 
+              theme(plot.title = element_text(color = "darkred",hjust = 0.5)) +
+              theme(strip.text.x = element_text(size = 14, colour = "#202020"))
+```
+
+And then read the data through read.csv function.
+
+```{r loading data}
+youtube_data <- read.csv('youtube_UTF_8.csv',encoding = "UTF-8")
+```
+
+Look at the structure of the data.
+
+```{r}
+str(youtube_data)
+```
+
+The dataset is a data frame with 995 observations and 28 variables. These 28 variables cover various types of information, including factor, integer, and numeric variables. Among these 28 variables, there are 7 factor variables, where "Youtuber" and "category" are two factors with a large number of levels. This can mean that there are many different YouTubers and categories of videos. In addition, the dataset also includes 4 integer variables that may involve count-related information such as "rank" and "subscribers". There are also 17 numeric variables, some of which may be floating point, covering various statistical and quantitative data, such as "video.views", "lowest_monthly_earnings" and "Population".
+
+Use summary function to obtain descriptive statistics
+
+```{r}
+summary(youtube_data)
+```
+
+It can find that most numeric variables, like subscribers and lowest_monthly_earnings are highly right-skewed.
+
+# 3 Data cleaning and transformation
+
+## 3.1 Ckeck the columns names and uniform column name format
+
+Use the names function to get the names of each column in data
+
+```{r}
+names(youtube_data)
+```
+
+The columns names are not have the same format then use function to uniform the format.
+
+Use the clean_names function in the [***janitor package***]{.underline} to normalize the column names of the data frame
+
+```{r message=FALSE, warning=FALSE}
+youtube_data <- youtube_data |> janitor::clean_names()
+print(names(youtube_data))
+```
+
+## 3.2 Find invaild and missing values then tranform them
+
+Find invalid value 0 in numerical variables, and find missing values "NaN" and "nan" in categorical variables, convert them to NA
+
+```{r}
+youtube_data[youtube_data == 0 | youtube_data == "nan" | youtube_data == "NaN"] <- NA
+```
+
+## 3.3 Remove some invalid rows
+
+According to the observation data, some invalid rows can be found. For example, the number of subscriptions is tens of thousands, but the number of views and uploaded videos is 0, and the corresponding income is also 0. This data should be collected for commercial protection reasons, so these data are somewhat distorted
+
+```{r}
+# Find those colunms
+variables_to_check <- c("video_views", "uploads", "lowest_monthly_earnings", 
+                         "highest_monthly_earnings", "lowest_yearly_earnings", 
+                         "highest_yearly_earnings")
+
+# Find rows that meet both conditions
+rows_with_all_na <- which(rowSums(is.na(youtube_data[, variables_to_check])) == length(variables_to_check))
+
+# Delete these rows
+deleted_rows <- youtube_data[rows_with_all_na, ]
+deleted_values <- deleted_rows[, variables_to_check]
+youtube_data_cleaned <- youtube_data[-rows_with_all_na, ]
+
+# Print all deleted rows
+print(deleted_values)
+```
+
+By analyzing the created_year column that needs to be used later, i found the existence of outlier
+
+```{r box plot,fig.align='center'}
+ggplot(youtube_data_cleaned, aes(x = created_year)) +
+  geom_boxplot(outlier.colour="darkred",outlier.shape=18, outlier.size=8) +
+  labs(title = "Box Plot of Created Year",
+       x = "Year",
+       y = "Created Year") +
+  plot_theme + coord_flip()
+```
+
+It can be found that the outlier shows that it is 1970, and this year is an outlier, so this line of data has no reference significance. It should be deleted.
+
+```{r}
+q1 <- quantile(youtube_data_cleaned$created_year, 0.25, na.rm = TRUE)
+q3 <- quantile(youtube_data_cleaned$created_year, 0.75, na.rm = TRUE)
+iqr <- q3 - q1
+lower_bound <- q1 - 1.5 * iqr
+upper_bound <- q3 + 1.5 * iqr
+
+youtube_data_cleaned <- youtube_data_cleaned[youtube_data_cleaned$created_year >= lower_bound & youtube_data_cleaned$created_year <= upper_bound, ]
+```
+
+## 3.4 Process some columns
+
+### 3.4.1 Handling NA values in channel type
+
+Convert all NA values in the channel type column to the string "missing".
+
+```{r}
+youtube_data_cleaned$channel_type[is.na(youtube_data_cleaned$channel_type)] <- "missing"
+```
+
+### 3.4.2 Handling all NAs in numeric variables
+
+For the purpose of maintaining data integrity, retaining sample size, retaining data structure, reducing bias, etc., convert NA in numerical variables into the median of the corresponding variable using ***function***.
+
+```{r}
+impute_na_with_median <- function(data) {
+  for (col_name in names(data)) {
+    col <- data[[col_name]]
+    
+    if (is.numeric(col)) {
+      median_val <- median(col, na.rm = TRUE)
+      col[is.na(col)] <- median_val
+      data[[col_name]] <- col
+    }
+  }
+  return(data)
+}
+youtube_data_cleaned <- impute_na_with_median(youtube_data_cleaned)
+```
+
+### 3.4.3 Delete columns
+
+To make subsequent data analysis more convenient, delete some unnecessary columns.
+
+```{r delete columns}
+youtube_data_transformed <- youtube_data_cleaned |>
+  select(-category, -title, -abbreviation,
+         -video_views_rank, -country_rank, -channel_type_rank, -created_date,
+         -population, -unemployment_rate, -gross_tertiary_education_enrollment,
+         -urban_population, -latitude, -longitude)
+```
+
+### 3.4.4 Data transformation
+
+Transform all the categorical variables into factors using ***function***
+
+```{r}
+convert_to_factor <- function(data) {
+  for (col_name in names(data)) {
+    if (is.character(data[[col_name]])) {  
+      data[[col_name]] <- as.factor(data[[col_name]])
+    }
+  }
+  return(data)
+}
+youtube_data_transformed <- convert_to_factor(youtube_data_transformed)
+```
+
+# 4 Visualisation
+
+## 4.1 Analyze channel type
+
+Look at the distribution of YouTube channel
+
+```{r bar chart, echo=TRUE, fig.height=6, fig.width=9, message=FALSE, warning=FALSE}
+sorted_youtube_data <- youtube_data_transformed
+channel_counts <- table(sorted_youtube_data$channel_type)
+sorted_channel_types <- names(sort(channel_counts))
+
+# Create a table of channel type counts
+channel_counts <- table(sorted_youtube_data$channel_type)
+
+# Convert channel_counts into a data frame for easier manipulation
+channel_counts_df <- data.frame(channel_type = names(channel_counts), count = as.numeric(channel_counts))
+
+# Sort the channel counts data frame by count
+sorted_channel_counts_df <- channel_counts_df[order(channel_counts_df$count, decreasing = FALSE), ]
+
+
+ggplot(sorted_channel_counts_df, aes(x = factor(channel_type, levels = sorted_channel_counts_df$channel_type), y = count)) +
+  geom_bar(stat = "identity",fill = 'grey90',color = 'darkred',bins = 20) +
+  geom_text(aes(label = count), vjust = -0.5,color = 'darkred') +
+  labs(title = "Distribution of Channel Type",
+       x = "Channel Type") + plot_theme + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1,size = 10),
+        axis.text.y = element_text(hjust = 0.5,size = 10),
+        plot.title = element_text(size = 18))
+```
+
+It can be found that the proportion of music channels and entertainment channels is the largest, indicating that the YouTube platform focuses on relaxation and entertainment for people. Although the proportion of educational channels is not large, it is almost equal to that of comedy channels, which shows that some people use YouTube to learn knowledge.
+
+## 4.2 Use shiny app to display scatter plot, density plot and map
+
+```{r shiny app, message=FALSE, warning=FALSE}
+world_map <- map_data("world")
+
+Video_Views_by_Country <- youtube_data_transformed |>
+  group_by(country) |>
+  summarise(videoviews = sum(video_views))
+
+
+map_data <- world_map |>
+  left_join(Video_Views_by_Country, by = c("region" = "country"), copy = TRUE)
+
+
+ui <- fluidPage(
+  titlePanel("Shiny App"),
+  
+  verticalLayout(
+   wellPanel(
+      selectInput("plot_type", "Select Plot Type:",
+                  choices = c("scatter_plot", "density_plot", "map")),
+    
+    
+    # When select different plot types, different widgets will be showed
+    conditionalPanel(
+      condition = "input.plot_type == 'scatter_plot'",
+      verticalLayout(
+        selectInput("numeric_var", "Select Numeric Variable:",
+                    choices = c("subscribers", "video_views")),
+        plotOutput("scatter_plot", width = "800px", height = "600px")
+      )
+    ),
+    conditionalPanel(
+      condition = "input.plot_type == 'density_plot'",
+      verticalLayout(
+        radioButtons("earnings_var", "Select Earnings Variable:",
+                     choices = c("monthly_earnings", "yearly_earnings")),
+        plotOutput("density_plot", width = "800px", height = "400px")
+      )
+    ),
+    conditionalPanel(
+      condition = "input.plot_type == 'map'",
+      verticalLayout(
+        sliderInput(inputId = "slider_range", label = "Video Views Range",
+                    min = 0, max = max(youtube_data_transformed$video_views),
+                    value = c(0, max(youtube_data_transformed$video_views))),
+        plotOutput("my_map", width = "800px", height = "600px")
+      )
+    )
+  )
+)
+)
+
+
+server <- function(input, output) {
+  
+  # Scatter plot
+  output$scatter_plot <- renderPlot({
+    x_var <- switch(input$numeric_var,
+                    "subscribers" = "subscribers",
+                    "video_views" = "video_views") 
+     
+    ggplot(youtube_data_transformed, aes_string(x = x_var, y = "channel_type", color = "channel_type")) +
+      geom_point() +
+      ggtitle(paste("Relationship between", input$numeric_var, "and Channel Type")) +
+      ylab("Channel Type") +
+      xlab(input$numeric_var) +
+      theme_minimal() + plot_theme +
+      theme(axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        plot.title = element_text(size = 17,hjust = 0.5),
+        legend.key.size = unit(1.2, "cm"),legend.text = element_text(size = 12),legend.title = element_text( size = 13))
+  })
+  
+  # Density plot
+  output$density_plot <- renderPlot({
+    earnings_var <- input$earnings_var
+    
+    if (earnings_var == "monthly_earnings") {
+      p <- ggplot(data = youtube_data_transformed) +
+        geom_density(aes(x = log(lowest_monthly_earnings), fill = "Lowest Monthly Earnings"), alpha = 0.5) +
+        geom_density(aes(x = log(highest_monthly_earnings), fill = "Highest Monthly Earnings"), alpha = 0.5) +
+        scale_x_log10() +
+        ggtitle("Monthly Earnings") +
+        xlab("Earnings(log)") +
+        ylab("Density") +
+        labs(fill = "Variable") +
+        plot_theme +
+        theme(axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        plot.title = element_text(size = 17,hjust = 0.5),
+        legend.key.size = unit(1.2, "cm"),legend.text = element_text(size = 12),legend.title = element_text( size = 13))
+      
+      p + annotate("text", x = max(p$data$x), y = 0, label = "Lowest Monthly Earnings", vjust = 0, hjust = 1, color = "lightblue") +
+          annotate("text", x = max(p$data$x), y = -0.02, label = "Highest Monthly Earnings", vjust = 0, hjust = 1, color = "darkred")
+    } else if (earnings_var == "yearly_earnings") {
+      p <- ggplot(data = youtube_data_transformed) +
+        geom_density(aes(x = log(lowest_yearly_earnings), fill = "Lowest Yearly Earnings"), alpha = 0.5) +
+        geom_density(aes(x = log(highest_yearly_earnings), fill = "Highest Yearly Earnings"), alpha = 0.5) +
+        scale_x_log10() +
+        ggtitle("Yearly Earnings") +
+        xlab("Earnings(log)") +
+        ylab("Density") +
+        labs(fill = "Variable") + 
+        plot_theme +
+        theme(axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        plot.title = element_text(size = 17,hjust = 0.5),
+        legend.key.size = unit(1.2, "cm"),legend.text = element_text(size = 12),legend.title = element_text( size = 13))
+      
+      p + annotate("text", x = max(p$data$x), y = 0, label = "Lowest Yearly Earnings", vjust = 0, hjust = 1, color = "lightblue") +
+          annotate("text", x = max(p$data$x), y = -0.02, label = "Highest Yearly Earnings", vjust = 0, hjust = 1, color = "darkred")
+    }
+  })
+  
+  # Map
+  filtered_data <- reactive({
+    subset(youtube_data_transformed,
+           video_views >= input$slider_range[1] & video_views <= input$slider_range[2])
+  })
+  
+  output$my_map <- renderPlot({
+    filtered_map_data <- left_join(map_data, filtered_data(), by = c("region" = "country"))
+
+    ggplot(data = filtered_map_data) +
+      geom_polygon(aes(x = long, y = lat, group = group, fill = video_views / 1e9), color = "white") +
+      scale_fill_gradient(name = "Video Views", low = "lightgrey", high = "darkred", labels = scales::comma) +
+      coord_fixed(ratio = 1.3) +
+      labs(title = "Video Views of Countries", fill = "Video Views") +
+      scale_x_continuous(labels = scales::comma) +
+      scale_y_continuous(labels = scales::comma) +
+      theme_minimal() +
+      theme(legend.position = "bottom", 
+            plot.title = element_text(size = 20,hjust = 0.5,color = "darkred"),
+            legend.key.size = unit(1.2, "cm"),
+            legend.text = element_text(size = 12),
+            legend.title = element_text( size = 13))
+  })
+}
+
+shinyApp(ui, server)
+```
+
+#### -Scatter plot
+
+it can be seen that the distribution of subscriptions and views on different channel types is roughly the same. In terms of subscriptions, music, entertainment, games, and education channels have a relatively large number of subscribers, and music channels have the largest number of subscribers at 245 million. In terms of playback volume, it is mainly entertainment, music, and education channels that have a relatively large playback volume, and the largest playback volume is also created by the music channel.
+
+#### -Density plot
+
+Whether it is monthly earnings or annual income, the general trend of changes is similar. First the curve is longer for lower incomes and then rises steeply to a peak income. At the same time the peak of the lowest income is always lower than the peak of the highest income
+
+#### -Map
+
+By sliding the slider, you can see the video views in different intervals and the corresponding city distribution. It can be seen that the countries with high video views are mainly concentrated in India and Russia, because the blocks in these countries are darker
+
+## 4.3 Analyze the distribution of channel types in different countries
+
+Because the country data is too large and there are many countries with very small playback volume, i decided to extract the top 100 countries for analysis
+
+```{r scatter plot,fig.height=22, fig.width=30, message=FALSE, warning=FALSE}
+new_youtube_data <- data.frame(
+  Country = youtube_data_transformed$country,
+  channel_type = youtube_data_transformed$channel_type
+)
+
+counting <- table(new_youtube_data$Country, new_youtube_data$channel_type)
+
+
+counting_df <- as.data.frame(counting)
+names(counting_df) <- c("Country", "Channel_type", "Count")
+
+
+top_countries <- counting_df |>
+  arrange(desc(Count)) |>
+  head(100)
+
+ggplot(data = top_countries, mapping = aes(x = Country, y = Channel_type)) +
+  geom_count(aes(size = Count, fill = Count)) +
+  scale_size_continuous(range = c(5, 20)) +
+  scale_fill_gradient(low = "lightblue", high = "darkred") +
+  ggtitle("Top 100 Countries vs. Channel Type") +
+  labs(x = "Country", y = "Channel Type", fill = "Count") +
+  plot_theme + coord_flip() +
+  theme(panel.background = element_rect(fill = "gray"),  
+        panel.grid.major = element_line(color = "white", linetype = 1),
+        axis.text = element_text(size = 30,hjust = 1),
+        axis.text.x = element_text(angle = 45),
+        axis.title = element_text(size = 35),
+        plot.title = element_text(size = 45),
+        legend.key.size = unit(3, "cm"),
+        legend.title = element_text(size = 25),
+        legend.text = element_text(size = 25))
+```
+
+It can be found that most of these top 100 countries have a relatively large proportion of entertainment and music. At the same time, people in the two countries of united states and India watch the widest range of channels.
+
+## 4.4 Analyze the subscription volume of different channel types in the past 30 days
+
+```{r pie chart, fig.height=20, fig.width=30, message=FALSE, warning=FALSE}
+
+custom_colors <- c("#1f78b4", "#33a02c", "#e31a1c", "#ff7f00", "#6a3d9a",
+                   "#b15928", "#a6cee3", "#b2df8a", "#fb9a99", "#fdbf6f",
+                   "#cab2d6", "#ffff99", "#8dd3c7", "#bebada", "#80b1d3")
+
+ggplot(youtube_data_transformed, aes(x = channel_type, y = subscribers_for_last_30_days, fill = channel_type)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = custom_colors) +  
+  labs(title = "Subscribers for Last 30 Days by Channel Type",
+       x = "Channel Type",
+       y = "Numbers of Subscribers") +
+  theme(axis.text = element_text(size = 25),
+        axis.title = element_text(size = 35),
+        legend.key.size = unit(3, "cm"),
+        legend.text = element_text(size = 30),
+        legend.title = element_text(size = 30),
+        plot.title = element_text(size = 45,hjust = 0.5,color = "darkred"))+
+  coord_polar() 
+```
+
+Similar to the distribution of the overall number of subscribers, the entertainment and music channels still have the largest number of subscriptions. The number of people following the people channel is second only to the number of people following the music channel.
+
+## 4.5 Analyze the relationship between creat time and earning
+
+### 4.5.1 First study the distribution of creation time
+
+```{r Stacked bar charts,fig.width=18,fig.height=10}
+date_info <- data.frame(year = youtube_data_transformed$created_year,
+                         month = youtube_data_transformed$created_month)
+date_info <- na.omit(date_info)
+
+date_info <- date_info[order(date_info$year, date_info$month), ]
+
+ggplot(date_info, aes(x = factor(year), fill = factor(month))) +
+  geom_bar() +
+  scale_x_discrete(labels = unique(date_info$year), expand = c(0.05, 0)) +
+  labs(title = "Distribution of creation time",
+       x = "Year",
+       y = "Count",
+       fill = "Month") +
+  plot_theme +
+  theme(axis.text = element_text(size = 20), 
+        axis.title = element_text(size = 23),
+        plot.title = element_text(size = 30),
+        legend.key.size = unit(1.5, "cm"),
+        legend.text = element_text(size = 15),
+        legend.title = element_text( size = 15))+
+  scale_fill_brewer(palette = "Set3")
+
+```
+
+As can be seen from this bar chart, the number of channels created in the three years of 2006, 2011 and 2014 is far greater than in other years, and 2014 is the last year of large-scale growth. After 2014, the overall number of channel creations tended to decline, and even if there was an increase, it was only a small increase.
+
+### 4.5.2 Analyze the relationship between creation time and video views
+
+```{r point_smooth plot,fig.width=12,fig.height=7}
+ggplot(data = youtube_data_transformed) +
+geom_point(mapping = aes(y = video_views, x = created_year), color = "darkred",shape = 18,size = 4)+
+geom_smooth(mapping = aes(y = video_views, x = created_year))+
+  labs(title = "Created year vs. Video Views")+plot_theme +
+  theme(plot.title = element_text(size = 20),
+        axis.title = element_text(size = 15),
+        axis.text = element_text(size = 13))
+```
+
+It can be seen that the number of views and created channels are directly in line with the development trend of channel creation. 2006 was not only the year when the number of created channels increased sharply, but also the year with the largest number of views. After that, the number of views remained at a certain level, accompanied by small-scale growth and slowdown.
+
+### 4.5.3 Study the relationship between creation year and earning
+
+```{r fig.height=6.5,fig.width=10}
+count_data <- youtube_data_transformed |>
+  group_by(created_year, channel_type) |>
+  count()
+
+p <- ggplot(count_data, aes(x = created_year, y = n, color = channel_type,text = paste("Channel Type: ", channel_type, "\nYear: ", created_year, "\nCount: ", n))) +
+  geom_point() +  
+  geom_line() +
+  geom_point(size = 3, alpha = 0.6)+
+  labs(title = " Created Year vs. Count by Channel Type",
+       x = "Created Year",
+       y = "Count",
+       color = "Channel Type")+
+  theme_minimal() +
+  theme(axis.title = element_text(size = 12),
+        axis.text = element_text(size = 11),
+        plot.title = element_text(size = 17,hjust = 0.5,color = "darkred"),
+        legend.key.size = unit(0.7, "cm"),
+        legend.text = element_text(size = 10),
+        legend.title = element_text( size = 13))
+
+ggplotly(p, tooltip = "text")
+```
+
+We can move the cursor to view the specific channel type, year and corresponding number of videos uploaded by the channel at each point. It can be seen from the observation point map that among the channel types each year, the entertainment category is the type with the most videos uploaded by bloggers. At the same time, not all channel types are uploaded by bloggers every year.
+
+### 4.5.4 Study the relationship between creation month and channel type
+
+```{r,fig.height=8,fig.width=15}
+ggplot(youtube_data_transformed, aes(x = created_month, y = channel_type, color = channel_type)) +
+  geom_point() +  
+  geom_line(aes(group = channel_type)) + 
+  labs(title = "Created Month vs. Channel Type",
+       x = "Created Month",
+       y = "Channel Type",
+       color = "Channel Type")+
+  theme_minimal() + 
+  theme(axis.title = element_text(size = 20),
+        axis.text = element_text(size = 16),
+        plot.title = element_text(size = 27,hjust = 0.5,color = "darkred"),
+        legend.key.size = unit(1, "cm"),
+        legend.text = element_text(size = 16),
+        legend.title = element_text( size = 19))
+```
+
+It can be seen that bloggers upload videos to every type of channel almost every month. Using only two channels, Nonprofit and Autos, there are almost no bloggers uploading videos for more than a few months.
+
+# 5 Conclusion
+
+The data set [global youtube statisctic](https://www.kaggle.com/datasets/nelgiriyewithana/global-youtube-statistics-2023) from Kaggle platform has 995 observations and 28 variables. There are missing values and invalid values in the data. It has been processed according to the corresponding analysis requirements and can be used for analysis. 
+
+In the analysis data, the analysis related to channel type, whether it is analyzing the type of channel type, or analyzing the relationship with the number of broadcasts or subscriptions, is the type of entertainment that is the most outstanding. 
+
+A clear trend can be seen in the income variable, that is, the income level of top bloggers is quite high, and the income of small bloggers is meager. Whether the amount of income is related to the time of creating accounts is worth further exploration. 
+
+Regarding the relationship between the number of broadcasts and the time of creating an account, it can be seen that there is a bonus period, but even if there is an increase after the bonus period, it will only increase slightly. It is reasonable to speculate that the earlier the account is created, the more likely it is to become a top blogger.
+
+# 6 Reference
+Holtz, Y. (n.d.). The R Graph Gallery – Help and inspiration for R charts. The R Graph Gallery. https://r-graph-gallery.com/
+
+OpenAI. (2023). ChatGPT (August 3 Version) [Large language model]. https://chat.openai.com
